@@ -1,17 +1,23 @@
 use std::{
-    cmp::max,
     fs::File,
     io::{self, BufRead},
     num::ParseIntError,
-    ops::Sub,
-    ptr::null,
 };
 
 use regex::Regex;
 
+#[derive(Clone, PartialEq)]
 enum ReactorStatus {
     Safe,
     Unsafe,
+    None,
+}
+
+#[derive(Clone)]
+struct ReactorData {
+    levels: Vec<i32>,
+    errors: u32,
+    status: ReactorStatus,
 }
 
 fn main() {
@@ -24,7 +30,7 @@ fn main() {
     loop {
         let mut line = String::new();
 
-        if let 0 = reader.read_line(&mut line).expect("Line could not be read") {
+        if reader.read_line(&mut line).expect("Line could not be read") == 0 {
             // Reached EOF
             break;
         }
@@ -33,12 +39,17 @@ fn main() {
             .expect("Could not extract reactor levels from line")
             .expect("Error while parsing reactor levels");
 
-        let reactor_status = determine_reactor_status(&reactor_levels, 1, 3)
-            .expect("Reactor status could not be determined: List is empty");
+        let reactor_status = determine_reactor_status(&reactor_levels, &1, &3, &1);
 
         match reactor_status {
             ReactorStatus::Safe => reactor_safe_count += 1,
-            ReactorStatus::Unsafe => reactor_unsafe_count += 1,
+            ReactorStatus::Unsafe => {
+                println!("UNSAFE: {}", line);
+                reactor_unsafe_count += 1
+            }
+            ReactorStatus::None => {
+                eprintln!("Reactor status could not be determined: List is empty")
+            }
         }
     }
 
@@ -68,34 +79,97 @@ fn capture_reactor_levels(line: &String) -> Option<Result<Vec<i32>, ParseIntErro
 }
 
 fn determine_reactor_status(
-    reactor_levels: &[i32],
-    min_difference: u32,
-    max_difference: u32,
-) -> Option<ReactorStatus> {
+    reactor_levels: &Vec<i32>,
+    min_difference: &u32,
+    max_difference: &u32,
+    error_tolerance: &u32,
+) -> ReactorStatus {
     if reactor_levels.is_empty() {
-        return None;
+        return ReactorStatus::None;
     }
 
-    let mut reactor_levels_iter = reactor_levels.iter();
-    let mut previous_level = reactor_levels_iter.next().unwrap();
-    let mut previous_increasing = true;
+    let reactor_data_clone = ReactorData {
+        levels: reactor_levels.clone(),
+        errors: 0,                   // No errors yet, need to check recursively
+        status: ReactorStatus::None, // Cannot determine status yet
+    };
 
-    // Always safe for one level
-    for (index, current_level) in reactor_levels_iter.enumerate() {
+    // Enter recursion
+    let reactor_data_check = check_reactor_levels(
+        &reactor_data_clone,
+        min_difference,
+        max_difference,
+        error_tolerance,
+    );
+
+    println!("");
+    reactor_data_check.status
+}
+
+// Only safe to call if reactor_data does not contain empty list!
+fn check_reactor_levels(
+    reactor_data: &ReactorData,
+    min_difference: &u32,
+    max_difference: &u32,
+    error_tolerance: &u32,
+) -> ReactorData {
+    print!("reactor_data: ");
+    for level in &reactor_data.levels {
+        print!("{} ", level)
+    }
+    println!("");
+
+    let mut reactor_data_clone = reactor_data.clone();
+    let mut reactor_levels_iter = reactor_data.levels.iter();
+    let mut prev_level = reactor_levels_iter.next().unwrap();
+    let mut prev_increasing = None;
+
+    for (index, level) in reactor_levels_iter.enumerate() {
         // Calculate difference and check if series is increasing
-        let difference = current_level.abs_diff(*previous_level);
-        let current_increasing = current_level - previous_level > 0;
+        let difference = level.abs_diff(*prev_level);
+        let increasing = level - prev_level > 0;
 
         // Check if increment is not within range and allowed direction
-        if (difference < min_difference || difference > max_difference)
-            || (index > 0 && current_increasing != previous_increasing)
+        if (difference < *min_difference || difference > *max_difference)
+            || (prev_increasing != None && increasing != prev_increasing.unwrap())
         {
-            return Some(ReactorStatus::Unsafe);
+            // Unsafe level: Enter recursion again
+            if reactor_data.errors < *error_tolerance {
+                // Check all 3 cases (current/previous/two previous)
+                for offset in 0..3 {
+                    if offset > 1 && index < 1 {
+                        break;
+                    }
+
+                    reactor_data_clone = reactor_data.clone();
+                    reactor_data_clone.levels.remove(index + 1 - offset);
+                    reactor_data_clone.errors += 1; // Increase error count
+
+                    print!("Case {} ", offset + 1);
+                    let reactor_data_check = check_reactor_levels(
+                        &reactor_data_clone,
+                        &min_difference,
+                        &max_difference,
+                        &error_tolerance,
+                    );
+
+                    if reactor_data_check.status == ReactorStatus::Safe {
+                        return reactor_data_check;
+                    }
+                }
+            }
+
+            // Reached error tolerance, reactor is unsafe
+            reactor_data_clone.status = ReactorStatus::Unsafe;
+            return reactor_data_clone;
         }
 
-        previous_level = current_level;
-        previous_increasing = current_increasing;
+        // Set variables for check in next iteration
+        prev_level = level;
+        prev_increasing = Some(increasing);
     }
 
-    Some(ReactorStatus::Safe)
+    // All levels safe
+    reactor_data_clone.status = ReactorStatus::Safe;
+    return reactor_data_clone;
 }
